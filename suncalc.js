@@ -98,10 +98,16 @@ SunCalc.getPosition = function (date, lat, lng) {
 
 
 // sun times configuration (angle, morning name, evening name)
-
-var times = SunCalc.times = [
+// NM ajout d'un tableau avec uniquement le lever/coucher du soleil
+var timesSunriseSunset = SunCalc.times = [
     [-0.833, 'sunrise',       'sunset'      ],
-    [  -0.3, 'sunriseEnd',    'sunsetStart' ],
+];
+
+// sun times configuration (angle, morning name, evening name)
+// NM array rename et ajour -4
+var timesAll = SunCalc.times = [
+    [-0.833, 'sunrise',       'sunset'      ],
+    [    -4, 'blueHourEnd',   'blueHour'    ], //ajout NM
     [    -6, 'dawn',          'dusk'        ],
     [   -12, 'nauticalDawn',  'nauticalDusk'],
     [   -18, 'nightEnd',      'night'       ],
@@ -109,10 +115,10 @@ var times = SunCalc.times = [
 ];
 
 // adds a custom time to the times config
-
 SunCalc.addTime = function (angle, riseName, setName) {
     times.push([angle, riseName, setName]);
 };
+
 
 
 // calculations for sun times
@@ -138,8 +144,12 @@ function getSetJ(h, lw, phi, dec, n, M, L) {
 
 // calculates sun times for a given date, latitude/longitude, and, optionally,
 // the observer height (in meters) relative to the horizon
+// NM Modif pour choisir si on calcule uniquement les heures de lever/coucher ou toutes les autres comme astronomique, ...
+SunCalc.getTimes = function (date, lat, lng, height, calculateAll ) {
 
-SunCalc.getTimes = function (date, lat, lng, height) {
+    // Ajout NM
+    // Choix du tableau si on doit calculer uniquement les heures de lever/coucher ou toutes les autres comme astronomique, ...
+    let times= calculateAll ? timesAll : timesSunriseSunset
 
     height = height || 0;
 
