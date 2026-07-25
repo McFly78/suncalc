@@ -99,9 +99,16 @@ export function getPosition(date, lat, lng) {
 }
 
 // sun times configuration (angle, morning name, evening name)
-export const times = [
+// NM ajout d'un tableau avec uniquement le lever/coucher du soleil
+export const timesSunriseSunset = [
+    [-0.833, 'sunrise', 'sunset'],
+];
+
+// NM array rename et ajour -4 et changement de noù
+export const timesAll = [
     [-0.833, 'sunrise', 'sunset'],
     [-0.3, 'sunriseEnd', 'sunsetStart'],
+    [-4, 'blueHourEnd', 'blueHour'], //ajout NM
     [-6, 'dawn', 'dusk'],
     [-12, 'nauticalDawn', 'nauticalDusk'],
     [-18, 'nightEnd', 'night'],
@@ -158,8 +165,12 @@ function getSetJ(h0, dt, sign, lw, phi, decT) {
 
 // calculates sun times for a given date, latitude/longitude, and, optionally,
 // the observer height (in meters) relative to the horizon
+// NM Modif pour choisir si on calcule uniquement les heures de lever/coucher ou toutes les autres comme astronomique, ... -> calculateAll
+export function getTimes(date, lat, lng, height = 0, calculateAll) {
 
-export function getTimes(date, lat, lng, height = 0) {
+    // Ajout NM
+    // Choix du tableau si on doit calculer uniquement les heures de lever/coucher ou toutes les autres comme astronomique, ...
+    const times= calculateAll ? timesAll : timesSunriseSunset
 
     const lw = rad * -lng;
     const phi = rad * lat;
