@@ -183,6 +183,7 @@ export function getTimes(date, lat, lng, height = 0, calculateAll, utcOffset) {
 
     // NM : calcul de tous les événements ou uniquement du lever/coucher
     const times = calculateAll ? timesAll : timesSunriseSunset;
+    
     const lw = rad * -lng;
     const phi = rad * lat;
     const dh = observerAngle(height);
