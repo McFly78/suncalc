@@ -39,7 +39,7 @@ export type SunTimes = Record<SunTimeName, Date | null> & {
  * solar day containing `date`, or for its civil day when the zone's `utcOffset` (minutes, positive
  * east of UTC) is given.
  */
-export function getTimes(date: Date, lat: number, lng: number, height?: number, utcOffset?: number): SunTimes;
+export function getTimes(date: Date, lat: number, lng: number, height?: number, calculateAll?: boolean, utcOffset?: number): SunTimes;
 
 /** Sun-time config rows: `[altitudeAngleDeg, morningName, eveningName]`. */
 export const times: Array<[number, string, string]>;
