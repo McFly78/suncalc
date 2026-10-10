@@ -13,6 +13,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import * as SunCalc from '../index.js';
 import fx from './fixtures.json' with {type: 'json'};
+import moonPhases from './moon-phases.json' with {type: 'json'};
 import {measure, stats} from './compare.js';
 
 const collectors = measure(SunCalc, fx);
@@ -51,7 +52,11 @@ const TOLERANCE = {
     // removes the parabola-root interpolation error. Mean ~0.26 min, max <1 min; the floor is USNO's
     // whole-minute rounding.
     'moontime.rise': {mean: 0.4,  max: 0.9},
-    'moontime.set': {mean: 0.4,  max: 0.9}
+    'moontime.set': {mean: 0.4,  max: 0.9},
+
+    // Moon transits — hour angle solved to zero (upper) or 180° (lower) against the ch.47 series.
+    'moontime.transit': {mean: 0.4,  max: 0.9},
+    'moontime.lowerTransit': {mean: 0.4,  max: 0.9}
 };
 
 for (const [field, tol] of Object.entries(TOLERANCE)) {
@@ -101,7 +106,7 @@ test('getTimes flags polar day/night instead of returning Invalid Date', () => {
 test('getMoonTimes flags no-crossing days instead of returning a bogus time', () => {
     const polar = fx.locations.reduce((a, b) => Math.abs(b.lat) > Math.abs(a.lat) ? b : a);
     for (const date of Object.keys(fx.times[polar.name] ?? {})) {
-        const r = SunCalc.getMoonTimes(new Date(`${date}T00:00:00Z`), polar.lat, polar.lng);
+        const r = SunCalc.getMoonTimes(new Date(`${date}T00:00:00Z`), polar.lat, polar.lng, 0);
         if (r.rise === undefined && r.set === undefined) {
             assert.ok(r.alwaysUp === true || r.alwaysDown === true,
                 `expected alwaysUp/alwaysDown flag on ${date} at ${polar.name}`);
@@ -117,7 +122,7 @@ test('getMoonTimes flags no-crossing days instead of returning a bogus time', ()
 test('getMoonTimes no-crossing flag matches the actual altitude sign (issue #186)', () => {
     const lat = 78, lng = 78;
     for (const date of ['2022-01-14', '2022-01-15', '2022-01-16']) {
-        const r = SunCalc.getMoonTimes(new Date(`${date}T12:00:00Z`), lat, lng);
+        const r = SunCalc.getMoonTimes(new Date(`${date}T12:00:00Z`), lat, lng, 0);
         assert.equal(r.rise, undefined, `unexpected rise on ${date}`);
         assert.equal(r.set, undefined, `unexpected set on ${date}`);
 
@@ -144,4 +149,92 @@ test('getTimes resolves the anchored solar day at every longitude (issue #187)',
         const off = (SunCalc.getTimes(anchor, lat, lng).solarNoon - anchor) / hourMs;
         assert.ok(Math.abs(off) < 1, `lng ${lng}: solarNoon ${off.toFixed(2)} h from local solar noon`);
     }
+});
+
+// regression for #189: getMoonTimes must scan the same day getTimes resolves (the local solar day
+// containing the instant), not the UTC day, which missed Boston's 20:23 EDT moonrise on Sep 30.
+test('getMoonTimes scans the local solar day getTimes resolves (issue #189)', () => {
+    const r = SunCalc.getMoonTimes(new Date('2026-09-30T16:00:00Z'), 42.764767, -71.042023);
+    assert.ok(r.rise && Math.abs(r.rise - Date.UTC(2026, 9, 1, 0, 23)) < 60e3, `rise ${r.rise?.toISOString()}`);
+
+    const day = Date.UTC(2026, 8, 30, 12), lat = 40, hourMs = 3600e3;
+    for (const lng of [-180, -179.7, -90, -71, 0, 90, 179.9, 180]) {
+        for (const h of [-6, 0, 6]) {
+            const date = new Date(day - (lng / 15 - h) * hourMs);
+            const {nadir} = SunCalc.getTimes(date, lat, lng);
+            const m = SunCalc.getMoonTimes(date, lat, lng);
+            for (const t of [m.rise, m.set, m.transit, m.lowerTransit]) {
+                if (t) assert.ok(t >= nadir - 60e3 && t < nadir.valueOf() + 24 * hourMs + 60e3,
+                    `lng ${lng} h ${h}: ${t.toISOString()} outside the solar day from ${nadir.toISOString()}`);
+            }
+        }
+    }
+});
+
+// with the observer's UTC offset, both functions resolve the civil day containing the instant
+// regardless of its time-of-day, fixing the local-midnight flips of #149 and #174.
+test('utcOffset anchors getTimes and getMoonTimes to the civil day', () => {
+    const cases = [
+        // [civil date, lat, lng, utcOffset in minutes]
+        ['2020-10-09', 56, 35, 180], // #149
+        ['2022-04-14', -14.415, 128.525, 480], // #174
+        ['2026-09-30', 42.764767, -71.042023, -240], // #189
+        ['2026-08-19', 40, -179.7, -720],
+        ['2026-08-19', 40, 179.7, 720],
+        ['2026-08-19', 27.7, 85.3, 345]
+    ];
+    for (const [date, lat, lng, off] of cases) {
+        const start = Date.parse(`${date}T00:00:00Z`) - off * 60e3, end = start + 86400e3;
+        for (const ms of [start, start + 43200e3, end - 60e3]) {
+            const t = SunCalc.getTimes(new Date(ms), lat, lng, 0, off);
+            assert.ok(t.solarNoon >= start && t.solarNoon < end, `${date} ${lng}: solarNoon ${t.solarNoon.toISOString()}`);
+
+            const m = SunCalc.getMoonTimes(new Date(ms), lat, lng, off);
+            for (const e of [m.rise, m.set, m.transit, m.lowerTransit]) {
+                if (e) assert.ok(e >= start && e < end, `${date} ${lng}: moon event ${e.toISOString()}`);
+            }
+        }
+    }
+    const m = SunCalc.getMoonTimes(new Date('2026-09-30T00:00:00-04:00'), 42.764767, -71.042023, -240);
+    assert.ok(m.rise && m.set, 'reporter input with offset gets both rise and set');
+});
+
+// consecutive daily windows must report every meridian crossing exactly once: transits ~24.8 h apart,
+// so each kind skips about one day a month, and they're reported even when the moon stays down
+test('getMoonTimes reports each moon transit exactly once across consecutive days', () => {
+    for (const [lat, lng, off] of [[51.5, -0.1, 0], [-33.9, 151.2, 600], [40, -179.7, -720], [78.2, 15.6, 60]]) {
+        for (const field of ['transit', 'lowerTransit']) {
+            let prev, skipped = 0;
+            for (let i = 0; i < 60; i++) {
+                const m = SunCalc.getMoonTimes(new Date(Date.UTC(2026, 0, 1 + i, 12)), lat, lng, off);
+                if (!m[field]) { skipped++; continue; }
+                if (prev) {
+                    const gap = (m[field] - prev) / 3600e3;
+                    assert.ok(gap > 24.2 && gap < 25.6, `${lat},${lng} ${field}: ${gap.toFixed(2)} h after previous`);
+                }
+                prev = m[field];
+            }
+            assert.ok(skipped === 2, `${lat},${lng} ${field}: ${skipped} days without one in 60`);
+        }
+    }
+});
+
+test('getMoonIllumination phase crosses the named values at the USNO phase instants (issue #190)', () => {
+    let sum = 0, max = 0;
+    for (const [iso, target] of moonPhases) {
+        const t = Date.parse(iso);
+        // bisect the instant phase passes target within ±12 h; signed offset wraps across 0/1
+        const past = ms => (SunCalc.getMoonIllumination(new Date(ms)).phase - target + 1.5) % 1 - 0.5;
+        let a = t - 12 * 3600e3, b = t + 12 * 3600e3;
+        while (b - a > 1e3) {
+            const m = (a + b) / 2;
+            if (past(m) < 0) a = m; else b = m;
+        }
+        const err = Math.abs(b - t) / 60e3;
+        sum += err;
+        max = Math.max(max, err);
+    }
+    // USNO times are rounded to the minute, so ~0.5 min mean is the floor
+    assert.ok(sum / moonPhases.length < 1, `mean ${(sum / moonPhases.length).toFixed(2)} min`);
+    assert.ok(max < 2, `max ${max.toFixed(2)} min`);
 });

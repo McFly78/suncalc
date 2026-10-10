@@ -1,6 +1,6 @@
 
 // shortcuts for easier to read formulas
-const {PI, sin, cos, tan, asin, atan2: atan, acos, sqrt, abs, round} = Math;
+const {PI, sin, cos, tan, asin, atan2: atan, acos, sqrt, abs, round, floor} = Math;
 const rad = PI / 180;
 
 // date/time constants and conversions
@@ -77,7 +77,8 @@ function sunCoords(d) {
 
     return {
         ra: atan(cos(e) * sin(L), cos(L)), // 25.6
-        dec: asin(sin(e) * sin(L))         // 25.7
+        dec: asin(sin(e) * sin(L)),        // 25.7
+        lon: L
     };
 }
 
@@ -162,24 +163,30 @@ function getSetJ(h0, dt, sign, lw, phi, decT) {
     }
     return d;
 }
+// start of the civil day containing date in a zone utcOffset minutes ahead of UTC, as a ms timestamp
+function civilMidnight(date, utcOffset) {
+    const offMs = utcOffset * 60000;
+    return floor((date.valueOf() + offMs) / dayMs) * dayMs - offMs;
+}
 
-// calculates sun times for a given date, latitude/longitude, and, optionally,
-// the observer height (in meters) relative to the horizon
-// NM Modif pour choisir si on calcule uniquement les heures de lever/coucher ou toutes les autres comme astronomique, ... -> calculateAll
-export function getTimes(date, lat, lng, height = 0, calculateAll) {
+// solar transit (days since J2000) anchoring the day shared by getTimes and getMoonTimes: the one
+// nearest the instant (the solar day containing it), or nearest civil noon when an offset is given
+function solarDayTransit(date, lw, utcOffset) {
+    const anchor = utcOffset === undefined ? date.valueOf() : civilMidnight(date, utcOffset) + dayMs / 2;
+    const lon = J0 + lw / (2 * PI);
+    return solarTransit(round(toDays(anchor) - lon) + lon, lw);
+}
 
-    // Ajout NM
-    // Choix du tableau si on doit calculer uniquement les heures de lever/coucher ou toutes les autres comme astronomique, ...
-    const times= calculateAll ? timesAll : timesSunriseSunset
+// calculates sun times for a given date, latitude/longitude, observer height,
+// whether to calculate all events, and an optional UTC offset in minutes
+export function getTimes(date, lat, lng, height = 0, calculateAll, utcOffset) {
 
+    // NM : calcul de tous les événements ou uniquement du lever/coucher
+    const times = calculateAll ? timesAll : timesSunriseSunset;
     const lw = rad * -lng;
     const phi = rad * lat;
     const dh = observerAngle(height);
-    // Anchor to the input date's UTC solar day regardless of its time-of-day, killing the historical
-    // "always pass noon" footgun where an early-morning Date returned the previous day's events:
-    // round to that day's noon, offset to the nearest local solar noon, then let solarTransit refine.
-    const d = round(toDays(date) - J0 - lw / (2 * PI));
-    const dt = solarTransit(d + J0 + lw / (2 * PI), lw);
+    const dt = solarDayTransit(date, lw, utcOffset);
     const dec = sunCoords(toDaysTT(dt)).dec; // declination at transit, shared by every rise/set solve
 
     const result = {
@@ -397,7 +404,8 @@ function moonCoords(d) {
     return {
         ra: atan(sin(l) * cos(eps) - tan(b) * sin(eps), cos(l)),  // 13.3
         dec: asin(sin(b) * cos(eps) + cos(b) * sin(eps) * sin(l)), // 13.4
-        dist: 385000.56 + sr / 1000  // distance to the Moon in km
+        dist: 385000.56 + sr / 1000, // distance to the Moon in km
+        lon: l
     };
 }
 
@@ -436,14 +444,17 @@ export function getMoonIllumination(date = new Date()) {
     const angle = atan(cos(s.dec) * sin(s.ra - m.ra), sin(s.dec) * cos(m.dec) -
         cos(s.dec) * sin(m.dec) * cos(s.ra - m.ra));
 
-    const waxing = angle < 0; // bright limb leads → illuminated fraction is growing (new → full)
+    // elongation in ecliptic longitude, which defines the named phases (Meeus ch. 49, USNO); the RA
+    // difference behind `angle` crosses 0/180° hours off conjunction/opposition near the nodes
+    const phase = (((m.lon - s.lon) / (2 * PI)) % 1 + 1) % 1;
+    const waxing = phase < 0.5;
 
     return {
         // illuminated fraction, 0 (new) → 1 (full); reaches the exact extrema only at perfect
         // syzygy (eclipses), so a "full" moon typically peaks a hair under 1 — this is correct
         fraction: (1 + cos(inc)) / 2,
         // phase, 0 → 1: 0 new, 0.25 first quarter, 0.5 full, 0.75 last quarter (waxing for phase < 0.5)
-        phase: 0.5 + 0.5 * inc * (waxing ? -1 : 1) / PI,
+        phase,
         // position angle of the bright limb, degrees (v2: all angles emitted in degrees) — subtract
         // getMoonPosition().parallacticAngle, also degrees, to get the zenith-relative tilt
         angle: angle / rad,
@@ -476,11 +487,28 @@ function refineMoonCross(tMs, lat, lng) {
     return tMs;
 }
 
-export function getMoonTimes(date, lat, lng) {
-    // scan the UTC calendar day of the given date; the date is treated as a UTC instant like
-    // everywhere else in the API. For a local-civil-day window, pass a date at local midnight.
-    const t = new Date(date);
-    t.setUTCHours(0, 0, 0, 0);
+// the moon's local hour angle (radians, unwrapped) at a ms timestamp
+function moonHourAngle(t, lw) {
+    const d = toDays(t);
+    return siderealTime(d, lw) - moonCoords(toDaysTT(d)).ra;
+}
+
+// time (ms) in [t0, t0 + 1 day) when the moon's hour angle reaches H0 (0 = upper transit, PI = lower),
+// or undefined when the window misses it, about once a month since the lunar day lasts ~24.8 hours
+function moonTransit(t0, lw, H0) {
+    const rate = 2 * PI * 0.96614 / dayMs; // mean hour angle rate (347.8° per day) in radians per ms
+    const a = H0 - moonHourAngle(t0, lw);
+    let t = t0 + (a - 2 * PI * floor(a / (2 * PI))) / rate; // first crossing after t0 at the mean rate
+    for (let i = 0; i < 2; i++) t -= wrapPi(moonHourAngle(t, lw) - H0) / rate;
+    return t < t0 + dayMs ? t : undefined;
+}
+
+export function getMoonTimes(date, lat, lng, utcOffset) {
+    // scan the same day getTimes resolves: the 24 hours from the solar nadir, or from civil midnight
+    // when the observer's UTC offset is given
+    const t = utcOffset === undefined ?
+        fromJulian(solarDayTransit(date, rad * -lng) + J2000 - 0.5) :
+        new Date(civilMidnight(date, utcOffset));
 
     let h0 = moonHeight(t, lat, lng);
     let rise, set, hMax = h0;
@@ -526,6 +554,13 @@ export function getMoonTimes(date, lat, lng) {
     // event whose numeric value is 0, which a truthy check would wrongly treat as "no event".
     if (rise !== undefined) result.rise = new Date(refineMoonCross(hoursLater(t, rise).valueOf(), lat, lng));
     if (set !== undefined) result.set = new Date(refineMoonCross(hoursLater(t, set).valueOf(), lat, lng));
+
+    // meridian crossings, reported whether or not the moon is above the horizon at the time
+    const lw = rad * -lng;
+    const transit = moonTransit(t.valueOf(), lw, 0);
+    const lowerTransit = moonTransit(t.valueOf(), lw, PI);
+    if (transit !== undefined) result.transit = new Date(transit);
+    if (lowerTransit !== undefined) result.lowerTransit = new Date(lowerTransit);
 
     // no crossing all day: flag which side the moon stays on by testing its highest sampled height
     // against the rise/set threshold (already baked into moonHeight), setting both like getTimes does
